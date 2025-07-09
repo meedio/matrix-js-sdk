@@ -446,6 +446,11 @@ export class MatrixRTCSession extends TypedEventEmitter<
                 transport,
                 this.statistics,
                 (keyBin: Uint8Array, encryptionKeyIndex: number, participantId: string) => {
+                    this.e2eeLogger.info(`Emitting EncryptionKeyChanged, LiveKit should receive this key.`, {
+                        forParticipant: participantId,
+                        encryptionKeyIndex,
+                        ...this.logContext,
+                    });
                     this.emit(MatrixRTCSessionEvent.EncryptionKeyChanged, keyBin, encryptionKeyIndex, participantId);
                 },
                 this.logger,

@@ -374,7 +374,7 @@ export class EncryptionManager implements IEncryptionManager {
         timestamp: number,
         delayBeforeUse = false,
     ): void {
-        this.e2eeLogger.debug(
+        this.e2eeLogger.info(
             `Setting encryption key for ${userId}:${deviceId} at index ${encryptionKeyIndex}`,
             this.logContext,
         );
@@ -399,7 +399,7 @@ export class EncryptionManager implements IEncryptionManager {
 
             if (keysEqual(existingKeyAtIndex.key, keyBin)) {
                 this.e2eeLogger.info(
-                    `Has existing key at index ${encryptionKeyIndex} for ${participantId}, updating timestamp only`,
+                    `Has identical existing key at index ${encryptionKeyIndex} for ${participantId}, updating timestamp only`,
                     this.logContext,
                 );
                 existingKeyAtIndex.timestamp = timestamp;
