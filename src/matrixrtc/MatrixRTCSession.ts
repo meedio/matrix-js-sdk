@@ -39,6 +39,14 @@ import {
 import { TypedReEmitter } from "../ReEmitter.ts";
 import { ToDeviceKeyTransport } from "./ToDeviceKeyTransport.ts";
 
+export const generateLogSessionId = (): string => {
+    const now = Date.now().toString(36);
+    const random = Math.random().toString(36).slice(2, 10);
+    return `${now}-${random}`;
+};
+
+export let logSessionId: string | null = null;
+
 export enum MatrixRTCSessionEvent {
     // A member joined, left, or updated a property of their membership.
     MembershipsChanged = "memberships_changed",
@@ -182,6 +190,7 @@ export class MatrixRTCSession extends TypedEventEmitter<
     // The session Id of the call, this is the call_id of the call Member event.
     private _callId: string | undefined;
     private logger: Logger;
+    private e2eeLogger: Logger;
     /**
      * This timeout is responsible to track any expiration. We need to know when we have to start
      * to ignore other call members. There is no callback for this. This timeout will always be configured to
@@ -335,11 +344,19 @@ export class MatrixRTCSession extends TypedEventEmitter<
     ) {
         super();
         this.logger = rootLogger.getChild(`[MatrixRTCSession ${roomSubset.roomId}]`);
+        this.e2eeLogger = rootLogger.getChild(`[E2EE_FLOW_MX][RTC_SESSION]`);
         this._callId = memberships[0]?.callId;
         const roomState = this.roomSubset.getLiveTimeline().getState(EventTimeline.FORWARDS);
         // TODO: double check if this is actually needed. Should be covered by refreshRoom in MatrixRTCSessionManager
         roomState?.on(RoomStateEvent.Members, this.onRoomMemberUpdate);
         this.setExpiryTimer();
+    }
+
+    private get logContext(): { logSessionId: string | null; roomId: string } {
+        return {
+            logSessionId,
+            roomId: this.roomSubset.roomId,
+        };
     }
 
     /*
@@ -382,10 +399,12 @@ export class MatrixRTCSession extends TypedEventEmitter<
      * @param joinConfig - Additional configuration for the joined session.
      */
     public joinRoomSession(fociPreferred: Focus[], fociActive?: Focus, joinConfig?: JoinSessionConfig): void {
+        logSessionId = generateLogSessionId();
         if (this.isJoined()) {
-            this.logger.info(`Already joined to session in room ${this.roomSubset.roomId}: ignoring join call`);
+            this.e2eeLogger.info(`Already joined to session in room, ignoring join call`, this.logContext);
             return;
         } else {
+            this.e2eeLogger.info(`Joining MatrixRTC session`, this.logContext);
             // Create MembershipManager and pass the RTCSession logger (with room id info)
             if (joinConfig?.useNewMembershipManager ?? false) {
                 this.membershipManager = new MembershipManager(
@@ -403,7 +422,10 @@ export class MatrixRTCSession extends TypedEventEmitter<
             // Create Encryption manager
             let transport;
             if (joinConfig?.useExperimentalToDeviceTransport) {
-                this.logger.info("Using to-device with room fallback transport for encryption keys");
+                this.e2eeLogger.info(
+                    "Using experimental to-device with room fallback transport for encryption keys",
+                    this.logContext,
+                );
                 const [uId, dId] = [this.client.getUserId()!, this.client.getDeviceId()!];
                 const [room, client, statistics] = [this.roomSubset, this.client, this.statistics];
                 // Deprecate RoomKeyTransport: only ToDeviceKeyTransport is needed once deprecated
@@ -414,6 +436,7 @@ export class MatrixRTCSession extends TypedEventEmitter<
                 // Expose the changes so the ui can display the currently used transport.
                 this.reEmitter.reEmit(transport, [RoomAndToDeviceEvents.EnabledTransportsChanged]);
             } else {
+                this.e2eeLogger.info("Using normal transport for encryption keys", this.logContext);
                 transport = new RoomKeyTransport(this.roomSubset, this.client, this.statistics);
             }
             this.encryptionManager = new EncryptionManager(
@@ -429,9 +452,13 @@ export class MatrixRTCSession extends TypedEventEmitter<
             );
         }
 
+        this.e2eeLogger.info(
+            "Joining in membershipManager and encryptionManager, emitting JoinStateChanged",
+            this.logContext,
+        );
         // Join!
         this.membershipManager!.join(fociPreferred, fociActive, (e) => {
-            this.logger.error("MembershipManager encountered an unrecoverable error: ", e);
+            this.e2eeLogger.error("MembershipManager encountered an unrecoverable error: ", { ...this.logContext, e });
             this.emit(MatrixRTCSessionEvent.MembershipManagerError, e);
             this.emit(MatrixRTCSessionEvent.JoinStateChanged, this.isJoined());
         });
@@ -456,7 +483,7 @@ export class MatrixRTCSession extends TypedEventEmitter<
             return false;
         }
 
-        this.logger.info(`Leaving call session in room ${this.roomSubset.roomId}`);
+        this.e2eeLogger.info(`Leaving call session in room ${this.roomSubset.roomId}`, this.logContext);
 
         this.encryptionManager!.leave();
 
@@ -498,6 +525,10 @@ export class MatrixRTCSession extends TypedEventEmitter<
      * the keys.
      */
     public reemitEncryptionKeys(): void {
+        this.e2eeLogger.info(
+            `Re-emitting EncryptionKeyChanged for ${this.encryptionManager?.getEncryptionKeys().size} keys`,
+            this.logContext,
+        );
         this.encryptionManager?.getEncryptionKeys().forEach((keys, participantId) => {
             keys.forEach((key, index) => {
                 this.emit(MatrixRTCSessionEvent.EncryptionKeyChanged, key.key, index, participantId);

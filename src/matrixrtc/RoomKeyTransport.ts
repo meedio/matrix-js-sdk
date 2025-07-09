@@ -24,12 +24,14 @@ import { type MatrixEvent } from "../models/event.ts";
 import { type CallMembership } from "./CallMembership.ts";
 import { TypedEventEmitter } from "../models/typed-event-emitter.ts";
 import { type Room, RoomEvent } from "../models/room.ts";
+import { logSessionId } from "./MatrixRTCSession.ts";
 
 export class RoomKeyTransport
     extends TypedEventEmitter<KeyTransportEvents, KeyTransportEventsHandlerMap>
     implements IKeyTransport
 {
     private logger: Logger = rootLogger;
+    private e2eeLogger: Logger;
     public setParentLogger(parentLogger: Logger): void {
         this.logger = parentLogger.getChild(`[RoomKeyTransport]`);
     }
@@ -44,7 +46,16 @@ export class RoomKeyTransport
     ) {
         super();
         this.setParentLogger(parentLogger ?? rootLogger);
+        this.e2eeLogger = (parentLogger ?? rootLogger).getChild(`[E2EE_FLOW_MX][ROOM_KEY_TRANSPORT]`);
     }
+
+    private get logContext(): { logSessionId: string | null; matrixUserId: string | null } {
+        return {
+            logSessionId,
+            matrixUserId: this.client.getUserId(),
+        };
+    }
+
     public start(): void {
         this.room.on(RoomEvent.Timeline, (ev) => void this.consumeCallEncryptionEvent(ev));
     }
@@ -57,23 +68,46 @@ export class RoomKeyTransport
 
         if (event.isDecryptionFailure()) {
             if (!isRetry) {
-                this.logger.warn(
-                    `Decryption failed for event ${event.getId()}: ${event.decryptionFailureReason} will retry once only`,
+                this.e2eeLogger.warn(
+                    `Decryption failed for ${event.getType()} event: ${event.decryptionFailureReason} will retry once only`,
+                    { ...this.logContext, sender: event.sender?.userId, eventId: event.getId() },
                 );
                 // retry after 1 second. After this we give up.
                 setTimeout(() => void this.consumeCallEncryptionEvent(event, true), 1000);
             } else {
-                this.logger.warn(`Decryption failed for event ${event.getId()}: ${event.decryptionFailureReason}`);
+                this.e2eeLogger.warn(
+                    `Decryption failed for ${event.getType()} event: ${event.decryptionFailureReason}`,
+                    {
+                        ...this.logContext,
+                        sender: event.sender?.userId,
+                        eventId: event.getId(),
+                    },
+                );
             }
             return;
         } else if (isRetry) {
-            this.logger.info(`Decryption succeeded for event ${event.getId()} after retry`);
+            this.e2eeLogger.info(`Decryption succeeded for ${event.getType()} event ${event.getId()} after retry`, {
+                ...this.logContext,
+                sender: event.sender?.userId,
+                eventId: event.getId(),
+            });
         }
 
         if (event.getType() !== EventType.CallEncryptionKeysPrefix) return Promise.resolve();
 
+        this.e2eeLogger.info("Received io.element.call.encryption_keys event", {
+            ...this.logContext,
+            sender: event.sender?.userId,
+            eventId: event.getId(),
+        });
+
         if (!this.room) {
-            this.logger.error(`Got room state event for unknown room ${event.getRoomId()}!`);
+            this.e2eeLogger.error(`Got room state event for unknown room ${event.getRoomId()}!`, {
+                ...this.logContext,
+                sender: event.sender?.userId,
+                eventId: event.getId(),
+            });
+
             return Promise.resolve();
         }
 
@@ -83,6 +117,9 @@ export class RoomKeyTransport
     /** implements {@link IKeyTransport#sendKey} */
     public async sendKey(keyBase64Encoded: string, index: number, members: CallMembership[]): Promise<void> {
         // members not used in room transports as the keys are sent to all room members
+
+        this.e2eeLogger.info("Sending encryption key", { ...this.logContext, index });
+
         const content: EncryptionKeysEventContent = {
             keys: [
                 {
@@ -98,7 +135,7 @@ export class RoomKeyTransport
         try {
             await this.client.sendEvent(this.room.roomId, EventType.CallEncryptionKeysPrefix, content);
         } catch (error) {
-            this.logger.error("Failed to send call encryption keys", error);
+            this.e2eeLogger.error("Failed to send call encryption key", { ...this.logContext, index, error });
             const matrixError = error as MatrixError;
             if (matrixError.event) {
                 // cancel the pending event: we'll just generate a new one with our latest
@@ -115,22 +152,27 @@ export class RoomKeyTransport
 
         const deviceId = content["device_id"];
         const callId = content["call_id"];
+        const logData = { ...this.logContext, eventId: event.getId(), sender: event.sender?.userId };
 
         if (!userId) {
-            this.logger.warn(`Received m.call.encryption_keys with no userId: callId=${callId}`);
+            this.e2eeLogger.warn(`Received m.call.encryption_keys with no userId: callId=${callId}`, logData);
             return;
         }
 
         // We currently only handle callId = "" (which is the default for room scoped calls)
         if (callId !== "") {
-            this.logger.warn(
+            this.e2eeLogger.warn(
                 `Received m.call.encryption_keys with unsupported callId: userId=${userId}, deviceId=${deviceId}, callId=${callId}`,
+                logData,
             );
             return;
         }
 
         if (!Array.isArray(content.keys)) {
-            this.logger.warn(`Received m.call.encryption_keys where keys wasn't an array: callId=${callId}`);
+            this.e2eeLogger.warn(
+                `Received m.call.encryption_keys where keys wasn't an array: callId=${callId}`,
+                logData,
+            );
             return;
         }
 
@@ -138,7 +180,7 @@ export class RoomKeyTransport
             // We store our own sender key in the same set along with keys from others, so it's
             // important we don't allow our own keys to be set by one of these events (apart from
             // the fact that we don't need it anyway because we already know our own keys).
-            this.logger.info("Ignoring our own keys event");
+            this.e2eeLogger.info("Ignoring our own keys event", logData);
             return;
         }
 
@@ -148,7 +190,7 @@ export class RoomKeyTransport
 
         for (const key of content.keys) {
             if (!key) {
-                this.logger.info("Ignoring false-y key in keys event");
+                this.e2eeLogger.info("Ignoring false-y key in keys event", logData);
                 continue;
             }
 
@@ -166,12 +208,14 @@ export class RoomKeyTransport
                 typeof encryptionKey !== "string" ||
                 typeof encryptionKeyIndex !== "number"
             ) {
-                this.logger.warn(
+                this.e2eeLogger.warn(
                     `Malformed call encryption_key: userId=${userId}, deviceId=${deviceId}, encryptionKeyIndex=${encryptionKeyIndex} callId=${callId}`,
+                    logData,
                 );
             } else {
-                this.logger.debug(
+                this.e2eeLogger.info(
                     `onCallEncryption userId=${userId}:${deviceId} encryptionKeyIndex=${encryptionKeyIndex} age=${age}ms`,
+                    logData,
                 );
                 this.emit(
                     KeyTransportEvents.ReceivedKeys,
