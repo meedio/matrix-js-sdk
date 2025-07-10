@@ -240,7 +240,12 @@ export class EncryptionManager implements IEncryptionManager {
             this.lastEncryptionKeyUpdateRequest &&
             this.lastEncryptionKeyUpdateRequest + this.updateEncryptionKeyThrottle > Date.now()
         ) {
-            this.e2eeLogger.info("Last encryption key event sent too recently: postponing", this.logContext);
+            this.e2eeLogger.info("Last encryption key event sent too recently: postponing", {
+                ...this.logContext,
+                lastEncryptionKeyUpdateRequest: this.lastEncryptionKeyUpdateRequest,
+                updateEncryptionKeyThrottle: this.updateEncryptionKeyThrottle,
+                dateNow: Date.now(),
+            });
             if (this.keysEventUpdateTimeout === undefined) {
                 this.keysEventUpdateTimeout = setTimeout(
                     () => void this.sendEncryptionKeysEvent(),
@@ -283,6 +288,11 @@ export class EncryptionManager implements IEncryptionManager {
             return;
         }
 
+        // NOTE: not sure why there was no length check so adding a log for debugging
+        if (!myKeys.length) {
+            this.e2eeLogger.error("Error: no keys found, but we passed through the check!", this.logContext);
+        }
+
         if (typeof indexToSend !== "number" && this.latestGeneratedKeyIndex === -1) {
             this.e2eeLogger.warn(
                 "Tried to send encryption keys event but no current key index found!",
@@ -315,10 +325,10 @@ export class EncryptionManager implements IEncryptionManager {
                 });
                 this.keysEventUpdateTimeout = setTimeout(() => void this.sendEncryptionKeysEvent(), resendDelay);
             } else {
-                this.e2eeLogger.info(
-                    "Not scheduling key resend as another re-send is already pending",
-                    this.logContext,
-                );
+                this.e2eeLogger.info("Not scheduling key resend as another re-send is already pending", {
+                    ...this.logContext,
+                    keysEventUpdateTimeout: this.keysEventUpdateTimeout,
+                });
             }
         }
     };
@@ -328,10 +338,10 @@ export class EncryptionManager implements IEncryptionManager {
     };
 
     public onNewKeyReceived: KeyTransportEventListener = (userId, deviceId, keyBase64Encoded, index, timestamp) => {
-        this.e2eeLogger.debug(
-            `Received key over key transport ${userId}:${deviceId} at index ${index}`,
-            this.logContext,
-        );
+        this.e2eeLogger.info(`Received key over key transport ${userId}:${deviceId} at index ${index}`, {
+            ...this.logContext,
+            timestamp,
+        });
         this.setEncryptionKey(userId, deviceId, index, keyBase64Encoded, timestamp);
     };
 
@@ -374,10 +384,10 @@ export class EncryptionManager implements IEncryptionManager {
         timestamp: number,
         delayBeforeUse = false,
     ): void {
-        this.e2eeLogger.info(
-            `Setting encryption key for ${userId}:${deviceId} at index ${encryptionKeyIndex}`,
-            this.logContext,
-        );
+        this.e2eeLogger.info(`Setting encryption key for ${userId}:${deviceId} at index ${encryptionKeyIndex}`, {
+            ...this.logContext,
+            timestamp,
+        });
         const keyBin = decodeBase64(encryptionKeyString);
 
         const participantId = getParticipantId(userId, deviceId);
@@ -392,7 +402,11 @@ export class EncryptionManager implements IEncryptionManager {
             if (existingKeyAtIndex.timestamp > timestamp) {
                 this.e2eeLogger.info(
                     `Ignoring new key at index ${encryptionKeyIndex} for ${participantId} as it is older than existing known key`,
-                    this.logContext,
+                    {
+                        ...this.logContext,
+                        existingKeyTimestamp: existingKeyAtIndex.timestamp,
+                        currentKeyTimestamp: timestamp,
+                    },
                 );
                 return;
             }
@@ -400,7 +414,7 @@ export class EncryptionManager implements IEncryptionManager {
             if (keysEqual(existingKeyAtIndex.key, keyBin)) {
                 this.e2eeLogger.info(
                     `Has identical existing key at index ${encryptionKeyIndex} for ${participantId}, updating timestamp only`,
-                    this.logContext,
+                    { ...this.logContext, timestamp },
                 );
                 existingKeyAtIndex.timestamp = timestamp;
                 return;

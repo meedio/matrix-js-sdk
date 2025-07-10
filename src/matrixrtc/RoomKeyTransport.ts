@@ -75,7 +75,7 @@ export class RoomKeyTransport
                 // retry after 1 second. After this we give up.
                 setTimeout(() => void this.consumeCallEncryptionEvent(event, true), 1000);
             } else {
-                this.e2eeLogger.warn(
+                this.e2eeLogger.error(
                     `Decryption failed for ${event.getType()} event: ${event.decryptionFailureReason}`,
                     {
                         ...this.logContext,

@@ -39,7 +39,7 @@ import {
 import { TypedReEmitter } from "../ReEmitter.ts";
 import { ToDeviceKeyTransport } from "./ToDeviceKeyTransport.ts";
 
-export const generateLogSessionId = (): string => {
+const generateLogSessionId = (): string => {
     const now = Date.now().toString(36);
     const random = Math.random().toString(36).slice(2, 10);
     return `${now}-${random}`;
@@ -461,6 +461,7 @@ export class MatrixRTCSession extends TypedEventEmitter<
             "Joining in membershipManager and encryptionManager, emitting JoinStateChanged",
             this.logContext,
         );
+
         // Join!
         this.membershipManager!.join(fociPreferred, fociActive, (e) => {
             this.e2eeLogger.error("MembershipManager encountered an unrecoverable error: ", { ...this.logContext, e });
