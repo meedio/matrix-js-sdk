@@ -400,6 +400,7 @@ export class MatrixRTCSession extends TypedEventEmitter<
      */
     public joinRoomSession(fociPreferred: Focus[], fociActive?: Focus, joinConfig?: JoinSessionConfig): void {
         logSessionId = generateLogSessionId();
+        this.e2eeLogger.info("Your matrix logSessionId: ", logSessionId);
         if (this.isJoined()) {
             this.e2eeLogger.info(`Already joined to session in room, ignoring join call`, this.logContext);
             return;
