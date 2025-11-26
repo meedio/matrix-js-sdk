@@ -60,7 +60,6 @@ export class RoomAndToDeviceTransport
         this.logger = (parentLogger ?? rootLogger).getChild(`[RoomAndToDeviceTransport]`);
         // update parent loggers for the sub transports so filtering for `RoomAndToDeviceTransport` contains their logs too
         this.toDeviceTransport.setParentLogger(this.logger);
-        this.roomKeyTransport.setParentLogger(this.logger);
 
         this.roomKeyTransport.on(KeyTransportEvents.ReceivedKeys, (...props) => {
             // Turn on the room transport if we receive a roomKey from another participant
